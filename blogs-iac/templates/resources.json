@@ -1,0 +1,177 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "location": {
+            "type": "string",
+            "defaultValue": "[resourceGroup().location]"
+        },
+        "serverVersion": {
+            "defaultValue": "3.6",
+            "allowedValues": [
+                "3.2",
+                "3.6"
+            ],
+            "type": "String",
+            "metadata": {
+                "description": "Specifies the MongoDB server version to use."
+            }
+        },
+        "environmentName": {
+            "type": "string",
+            "allowedValues": [
+                "dev",
+                "prod"
+            ]
+        },
+        "projectName": {
+            "type": "string",
+            "defaultValue": "omniverse"
+        },
+        "databaseName": {
+            "type": "string",
+            "defaultValue": "omniverse-db",
+            "metadata": {
+                "description": "The name for the Mongo DB database"
+            }
+        },
+        "throughput": {
+            "type": "int",
+            "defaultValue": 400,
+            "minValue": 400,
+            "maxValue": 1000000,
+            "metadata": {
+                "description": "The shared throughput for the Mongo DB database"
+            }
+        },
+        "collectionName": {
+            "type": "string",
+            "defaultValue": "blogs",
+            "metadata": {
+                "description": "The name for the Mongo DB collection"
+            }
+        },
+        "appServicePlanSku": {
+            "type": "string",
+            "defaultValue": "F1",
+            "metadata": {
+                "description": "The SKU of App Service Plan."
+            }
+        },
+        "blogslinuxFxVersion": {
+            "type": "string",
+            "defaultValue": "NODE|12-lts",
+            "metadata": {
+                "description": "The Runtime stack of blog web app"
+            }
+        }
+    },
+    "functions": [],
+    "variables": {
+        "resourceNamePrefix": "[concat(parameters('environmentName'), '-', parameters('projectName'))]",
+        "cosmosAccountName": "[toLower(concat(variables('resourceNamePrefix'), '-', 'cos01'))]",
+        "appServicePlanName": "[toLower(concat(variables('resourceNamePrefix'), '-', 'apl01'))]",
+        "blogWebAppName": "[toLower(concat(variables('resourceNamePrefix'), '-', 'blogs'))]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.DocumentDB/databaseAccounts",
+            "name": "[variables('cosmosAccountName')]",
+            "apiVersion": "2020-03-01",
+            "location": "[parameters('location')]",
+            "kind": "MongoDB",
+            "properties": {
+                "consistencyPolicy": {
+                    "defaultConsistencyLevel": "Session"
+                },
+                "locations": [
+                    {
+                        "locationName": "[parameters('location')]",
+                        "failoverPriority": 0,
+                        "isZoneRedundant": false
+                    }
+                ],
+                "databaseAccountOfferType": "Standard",
+                "apiProperties": {
+                    "serverVersion": "[parameters('serverVersion')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.DocumentDB/databaseAccounts/mongodbDatabases",
+            "name": "[concat(variables('cosmosAccountName'), '/', parameters('databaseName'))]",
+            "apiVersion": "2020-03-01",
+            "dependsOn": [ "[resourceId('Microsoft.DocumentDB/databaseAccounts/', variables('cosmosAccountName'))]" ],
+            "properties": {
+                "resource": {
+                    "id": "[parameters('databaseName')]"
+                },
+                "options": { "throughput": "[parameters('throughput')]" }
+            }
+        },
+        {
+            "type": "Microsoft.DocumentDb/databaseAccounts/mongodbDatabases/collections",
+            "name": "[concat(variables('cosmosAccountName'), '/', parameters('databaseName'), '/', parameters('collectionName'))]",
+            "apiVersion": "2020-03-01",
+            "dependsOn": [ "[resourceId('Microsoft.DocumentDB/databaseAccounts/mongodbDatabases', variables('cosmosAccountName'), parameters('databaseName'))]" ],
+            "properties": {
+                "resource": {
+                    "id": "[parameters('collectionName')]",
+                    "shardKey": {
+                        "tenant_id": "Hash"
+                    },
+                    "options": {
+                        "If-Match": "<ETag>"
+                    }
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Web/serverfarms",
+            "apiVersion": "2020-06-01",
+            "name": "[variables('appServicePlanName')]",
+            "location": "[parameters('location')]",
+            "sku": {
+                "name": "[parameters('appServicePlanSku')]"
+            },
+            "kind": "linux",
+            "properties": {
+                "reserved": true
+            }
+        },
+        {
+            "type": "Microsoft.Web/sites",
+            "apiVersion": "2020-06-01",
+            "name": "[variables('blogWebAppName')]",
+            "location": "[parameters('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]"
+            ],
+            "properties": {
+                "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+                "siteConfig": {
+                    "linuxFxVersion": "[parameters('blogslinuxFxVersion')]",
+                    "appSettings": [
+                        {
+                            "name": "MONGODB_NAME",
+                            "value": "[parameters('databaseName')]"
+                        },
+                        {
+                            "name": "MONGODB_SERVER",
+                            "value": "[concat('mongodb://', variables('cosmosAccountName'), '.mongo.cosmos.azure.com:10255?ssl=true&replicaSet=globaldb&retryWrites=false')]"
+                        },
+                        {
+                            "name": "MONGODB_USERNAME",
+                            "value": "[variables('cosmosAccountName')]"
+                        },
+                        {
+                            "name": "MONGODB_PASSWORD",
+                            "value": "[listKeys(resourceId('Microsoft.DocumentDB/databaseAccounts', variables('cosmosAccountName')), '2020-03-01').primaryMasterKey]"
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "outputs": {}
+}
